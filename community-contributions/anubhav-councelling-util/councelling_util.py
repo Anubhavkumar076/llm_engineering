@@ -4,6 +4,8 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from data_extractor import get_questionnaire_data
 import json
+import subprocess
+import requests
 # Load environment variables in a file called .env
 # Print the key prefixes to help with any debugging
 
@@ -19,6 +21,15 @@ else:
 openai = OpenAI()
 MODEL = 'gpt-4.1-mini'
 CONFIDENCE_THRESHOLD = 9
+
+
+MODEL_NAME = "tinyllama"
+
+QUESTIONNAIRE_DATA = get_questionnaire_data("ChatGPT")
+
+questions = QUESTIONNAIRE_DATA["Question"]
+
+ollama = OpenAI(base_url="http://localhost:11434/v1", api_key="dummy")
 
 system_message = """You are a personal counselor who will take the questions along with the answers and rate the answers with respect to OCEAN parameters.
 OCEAN parameters are: Openness to Experience, Conscientiousness, Extraversion, Agreeableness, Neuroticism in json format which is like this for each traits:
@@ -49,16 +60,20 @@ agent_message = f"""
     ]
     """
 
-
-QUESTIONNAIRE_DATA = get_questionnaire_data("ChatGPT")
-
-questions = QUESTIONNAIRE_DATA["Question"]
-
-
-def openAI_response(system_message, formatted_results):
+def openAI_response(system_message, formatted_results, is_open_source_call):
     messages = [{"role": "system", "content": system_message}] + [{"role": "user", "content": formatted_results}]
-    response = openai.chat.completions.create(model=MODEL, messages=messages)
-    return response.choices[0].message.content
+    print("Inside Triggering open ai")
+    if is_open_source_call:
+        print("Calling ollama")
+        ensure_model_present(MODEL_NAME)
+        response = ollama.chat.completions.create(model=MODEL_NAME, messages=messages)
+        print("Response ollama")
+        return response.choices[0].message.content
+    else: 
+        print("Calling open ai")
+        response = openai.chat.completions.create(model=MODEL, messages=messages)
+        print("Response open ai")
+        return response.choices[0].message.content
 
 def collect_answers(*answers):
     """
@@ -75,9 +90,15 @@ def collect_answers(*answers):
     for q, a in zip(questions, answers):
         formatted_results += f"* **{q}**\n  * **Response:** {a}\n"
 
-    response = openAI_response(system_message, formatted_results)
+
+    print("Before Triggering open ai")
+    print(questions)
+
+    response = openAI_response(system_message, formatted_results, False)
 
     formatted_results += "## 📝 Counselor Response\n " + response
+
+    print(formatted_results)
     
     personality_calibration_agent(response)
         
@@ -85,8 +106,8 @@ def collect_answers(*answers):
 
 
 def generate_situational_questions(trait):
-
-    response = openAI_response(agent_message, ensure_json_string(trait))
+    # Turn the flag to false to make API call to openAI
+    response = openAI_response(agent_message, ensure_json_string(trait), True)
     # This needs to be added on UI 
     print("Additional Questions: " + response)
 
@@ -176,6 +197,27 @@ with gr.Blocks(title="Counselling Questionnaire") as demo:
         outputs=output_display,
         show_progress=True
     )
+
+
+def ensure_model_present(model):
+    # Check if model is already installed
+    try:
+        tags = requests.get("http://localhost:11434/api/tags").json()
+        installed = [m["name"] for m in tags.get("models", [])]
+        
+        if model in installed:
+            print(f"Model '{model}' is already installed.")
+            return
+        
+        print(f"Model '{model}' not found. Pulling...")
+        
+        # Run the pull command
+        subprocess.run(["ollama", "pull", model], check=True)
+        print(f"Model '{model}' downloaded successfully.")
+    
+    except Exception as e:
+        print("Error checking/pulling model:", e)
+
 
 if __name__ == "__main__":
     demo.launch()
